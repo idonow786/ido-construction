@@ -1,15 +1,226 @@
 const ProjectC = require('../../Model/projectConstruction');
 const Wallet = require('../../Model/Wallet');
+const Vendor = require('../../Model/vendorSchema');
+const Supplier = require('../../Model/supplierSchema');
+const Inventory = require('../../Model/inventorySchema');
 const { uploadFileToFirebase } = require('../../Firebase/uploadFileToFirebase');
+const nodemailer = require("nodemailer");
+const sendinBlue = require("nodemailer-sendinblue-transport");
+
+// Create transporter for email
+const transporter = nodemailer.createTransport(
+  new sendinBlue({
+    apiKey: process.env.SENDINBLUE_API_KEY,
+  })
+);
+
+const sendProjectAssignmentEmail = async (receiverEmail, projectName, role, entityType, materials = []) => {
+  try {
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Project Assignment Notification</title>
+          <style>
+            .email-container {
+              max-width: 600px;
+              margin: 0 auto;
+              font-family: Arial, sans-serif;
+              line-height: 1.6;
+              color: #333333;
+            }
+            .header {
+              background-color: #1a4f7c;
+              padding: 20px;
+              text-align: center;
+            }
+            .header h1 {
+              color: #ffffff;
+              margin: 0;
+              font-size: 24px;
+            }
+            .content {
+              padding: 30px 20px;
+              background-color: #ffffff;
+            }
+            .project-details {
+              background-color: #f8f9fa;
+              padding: 20px;
+              border-radius: 5px;
+              margin: 20px 0;
+              border-left: 4px solid #1a4f7c;
+            }
+            .materials-list {
+              margin-top: 20px;
+              border-top: 1px solid #eee;
+              padding-top: 15px;
+            }
+            .footer {
+              background-color: #f8f9fa;
+              padding: 20px;
+              text-align: center;
+              font-size: 12px;
+              color: #666666;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="email-container">
+            <div class="header">
+              <h1>Project Assignment Notification</h1>
+            </div>
+            
+            <div class="content">
+              <p>Dear ${entityType},</p>
+              
+              <div class="project-details">
+                <h2>Project Information:</h2>
+                <p><strong>Project Name:</strong> ${projectName}</p>
+                <p><strong>Your Role:</strong> ${role}</p>
+              </div>
+              
+              ${materials.length > 0 ? `
+                <div class="materials-list">
+                  <h3>Allocated Materials:</h3>
+                  <ul>
+                    ${materials.map(m => `
+                      <li>${m.name} - Quantity: ${m.quantity}</li>
+                    `).join('')}
+                  </ul>
+                </div>
+              ` : ''}
+              
+              <p>Please log in to your account for more details and project specifications.</p>
+            </div>
+            
+            <div class="footer">
+              <p>This is an automated message from GAAP Project Management System</p>
+              <p>© ${new Date().getFullYear()} GAAP. All rights reserved.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const mailOptions = {
+      from: process.env.MAIL_FROM || 'noreply@gaap.ae',
+      to: receiverEmail,
+      subject: `Project Assignment: ${projectName}`,
+      html: htmlContent
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log("Email sent successfully:", info.response);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error("Error sending email:", error);
+    throw new Error("Failed to send email notification");
+  }
+};
 
 const addProjectConstruction = async (req, res) => {
   try {
     const projectData = req.body;
     console.log('Project Data: ', projectData);
-
     if (!projectData.projectName) {
       return res.status(400).json({ message: 'Project name is required' });
     }
+  // Process vendors and suppliers
+  if (projectData.vendorsAndSuppliers) {
+    const processedEntities = [];
+    for (const entity of projectData.vendorsAndSuppliers) {
+      const EntityModel = entity.entityType === 'Vendor' ? Vendor : Supplier;
+      const entityDoc = await EntityModel.findOne({ 
+        _id: entity.entity,
+        adminId: req.adminId 
+      });
+
+      if (!entityDoc) {
+        return res.status(404).json({ 
+          message: `${entity.entityType} not found or unauthorized` 
+        });
+      }
+
+      processedEntities.push({
+        entity: entityDoc._id,
+        entityType: entity.entityType,
+        role: entity.role,
+        paymentAmount: entity.paymentAmount,
+        paymentStatus: 'pending',
+        assignedDate: new Date()
+      });
+
+      // Send notification email
+      try {
+        const allocatedMaterials = projectData.materials
+          .filter(m => m.allocatedTo?.vendor?.equals(entityDoc._id))
+          .map(m => ({
+            name: m.inventoryItem.itemName,
+            quantity: m.quantityRequired
+          }));
+
+        await sendProjectAssignmentEmail(
+          entityDoc.contactInformation.email,
+          projectData.projectName,
+          entity.role,
+          entity.entityType,
+          allocatedMaterials
+        );
+      } catch (emailError) {
+        console.error('Error sending notification:', emailError);
+      }
+    }
+    projectData.vendorsAndSuppliers = processedEntities;
+  }
+
+  // Process materials and update inventory
+  if (projectData.materials) {
+    const processedMaterials = [];
+    for (const material of projectData.materials) {
+      const inventoryItem = await Inventory.findOne({
+        _id: material.inventoryItem,
+        adminId: req.adminId
+      });
+
+      if (!inventoryItem) {
+        return res.status(404).json({ 
+          message: `Inventory item not found: ${material.inventoryItemId}` 
+        });
+      }
+
+      if (inventoryItem.quantity < material.quantityRequired) {
+        return res.status(400).json({ 
+          message: `Insufficient quantity for ${inventoryItem.itemName}` 
+        });
+      }
+
+      // Deduct from inventory
+      inventoryItem.quantity -= material.quantityRequired;
+      await inventoryItem.save();
+
+      processedMaterials.push({
+        inventoryItem: inventoryItem._id,
+        quantityRequired: material.quantityRequired,
+        allocatedTo: material.allocatedTo,
+        status: 'allocated'
+      });
+
+      // Record the transaction
+      projectData.materialTransactions = projectData.materialTransactions || [];
+      projectData.materialTransactions.push({
+        material: inventoryItem._id,
+        quantity: material.quantityRequired,
+        transactionType: 'deduction',
+        performedBy: req.adminId
+      });
+    }
+    projectData.materials = processedMaterials;
+  }
+
+  // Process existing data (reference: addProjectConstruction.js, lines 25-102)
+  // projectData = await processExistingData(projectData);
 
     // Function to safely parse JSON or split string
     const safeParseOrSplit = (value) => {
