@@ -21,10 +21,10 @@ const getProjectExpenses = async (req, res) => {
         .populate('materials.inventoryItem'),
       ProjectExpense.find({ projectId: projectObjectId }).sort({ date: -1 }),
       Invoice.find({ 
-        ProjectId: projectObjectId,
-        // Add any additional filters if needed
-        // status: { $in: ['pending', 'paid', 'overdue'] }
-      }).sort({ createdAt: -1 })
+        ProjectId: projectObjectId  // Changed to match your model's field name
+      })
+      .populate('CustomerId')
+      .sort({ InvoiceDate: -1 })
     ]);
 
     if (!project) {
@@ -71,33 +71,27 @@ const getProjectExpenses = async (req, res) => {
 
     // Process invoices with proper null checks
     const invoiceOverview = {
-      total: invoices.reduce((sum, inv) => sum + (Number(inv.totalAmount) || 0), 0),
+      total: invoices.reduce((sum, inv) => sum + (Number(inv.InvoiceTotal) || 0), 0),
       paid: invoices.reduce((sum, inv) => 
-        inv.status === 'paid' ? sum + (Number(inv.totalAmount) || 0) : sum, 0),
+        inv.Status === 'paid' ? sum + (Number(inv.InvoiceTotal) || 0) : sum, 0),
       pending: invoices.reduce((sum, inv) => 
-        inv.status === 'pending' ? sum + (Number(inv.totalAmount) || 0) : sum, 0),
+        inv.Status === 'pending' ? sum + (Number(inv.InvoiceTotal) || 0) : sum, 0),
       overdue: invoices.reduce((sum, inv) => 
-        inv.status === 'overdue' ? sum + (Number(inv.totalAmount) || 0) : sum, 0),
+        (inv.Status === 'due' || inv.Status === 'overdue') ? sum + (Number(inv.InvoiceTotal) || 0) : sum, 0),
       details: invoices.map(inv => ({
         invoiceId: inv._id,
-        invoiceNumber: inv.invoiceNumber || '',
-        clientName: inv.clientName || 'Unknown Client',
-        totalAmount: Number(inv.totalAmount) || 0,
-        status: inv.status || 'pending',
-        dueDate: inv.dueDate,
+        invoiceNumber: inv.InvoiceNumber || '',
+        clientName: inv.CustomerId?.Name || 'Unknown Client',
+        totalAmount: Number(inv.InvoiceTotal) || 0,
+        status: inv.Status || 'pending',
+        dueDate: inv.InvoiceDate,
         createdAt: inv.createdAt,
-        items: (inv.items || []).map(item => ({
-          description: item.description || '',
-          quantity: Number(item.quantity) || 0,
-          unitPrice: Number(item.unitPrice) || 0,
-          amount: Number(item.amount) || 0
-        })),
-        payments: (inv.payments || []).map(payment => ({
-          amount: Number(payment.amount) || 0,
-          date: payment.date,
-          method: payment.paymentMethod || 'unknown',
-          status: payment.status || 'pending'
-        }))
+        orderNumber: inv.OrderNumber,
+        subTotal: Number(inv.SubTotal) || 0,
+        vat: Number(inv.Vat) || 0,
+        quantity: Number(inv.Quantity) || 0,
+        description: inv.Description || '',
+        customProperties: inv.customProperties || []
       }))
     };
 
