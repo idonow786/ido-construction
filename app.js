@@ -26,6 +26,7 @@ const vendorRoute = require('./Route/vendorRoute')
 const taskRoute = require('./Route/taskRoute')
 const supplierRoute = require('./Route/supplierRoutes')
 const inventoryRoute = require('./Route/inventoryRoutes')
+const adminRoute = require('./Route/adminRoute')
 
 // Connect to MongoDB
 const db = require('./Config/db');
@@ -64,6 +65,7 @@ app.use('/api/vendor', vendorRoute)
 app.use('/api/task', taskRoute)
 app.use('/api/supplier', supplierRoute)
 app.use('/api/inventory', inventoryRoute)
+app.use('/api/admin', adminRoute)
 
 // Error handling middleware
 app.use((err, req, res, next) => {
