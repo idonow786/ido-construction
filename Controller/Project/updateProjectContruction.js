@@ -1,11 +1,10 @@
 const ProjectC = require('../../Model/projectConstruction');
+const ProjectExpense = require('../../Model/ProjectExoense');
 const Wallet = require('../../Model/Wallet');
 const Vendor = require('../../Model/vendorSchema');
 const Supplier = require('../../Model/supplierSchema');
 const Inventory = require('../../Model/inventorySchema');
-const { uploadFileToFirebase } = require('../../Firebase/uploadFileToFirebase');
 const mongoose = require('mongoose');
-
 const processExistingData = async (projectData) => {
   const safeParseOrSplit = (value) => {
     if (typeof value === 'string') {
@@ -43,7 +42,6 @@ const processExistingData = async (projectData) => {
 
   return projectData;
 };
-
 const updateProjectConstruction = async (req, res) => {
   try {
     const { projectId } = req.query;
@@ -59,12 +57,38 @@ const updateProjectConstruction = async (req, res) => {
       return res.status(404).json({ message: 'Project not found or not authorized' });
     }
 
-    // Store old project data for wallet update
+    // Store old project data for comparison
     const oldProjectData = project.toObject();
+
+    // First, delete existing expense entries that will be updated
+    if (projectData.vendorsAndSuppliers || projectData.materials || projectData.resources) {
+      await ProjectExpense.deleteMany({
+        projectId,
+        category: {
+          $in: [
+            'Vendor/Supplier Payments',
+            'Material Costs',
+            'Resource Costs'
+          ]
+        }
+      });
+    }
+
+    // Create new expense entries based on updated data
+    const expenseEntries = [];
 
     // Process vendors and suppliers
     if (projectData.vendorsAndSuppliers) {
       const processedEntities = [];
+      const vendorExpense = {
+        projectId,
+        category: 'Vendor/Supplier Payments',
+        description: 'Updated vendor and supplier allocations',
+        date: new Date(),
+        paidBy: adminId,
+        subcategories: []
+      };
+
       for (const entity of projectData.vendorsAndSuppliers) {
         let entityDoc;
         if (entity.entityType === 'Vendor') {
@@ -86,13 +110,29 @@ const updateProjectConstruction = async (req, res) => {
           paymentAmount: entity.paymentAmount,
           paymentStatus: entity.paymentStatus || 'pending'
         });
+
+        vendorExpense.subcategories.push({
+          name: `${entity.entityType} - ${entity.role}`,
+          amount: entity.paymentAmount,
+          description: `Updated payment for ${entityDoc.name}`
+        });
       }
       projectData.vendorsAndSuppliers = processedEntities;
+      expenseEntries.push(vendorExpense);
     }
 
     // Process materials
     if (projectData.materials) {
       const processedMaterials = [];
+      const materialExpense = {
+        projectId,
+        category: 'Material Costs',
+        description: 'Updated material allocations',
+        date: new Date(),
+        paidBy: adminId,
+        subcategories: []
+      };
+
       for (const material of projectData.materials) {
         const inventoryItem = await Inventory.findById(material.inventoryItem);
         if (!inventoryItem) {
@@ -126,6 +166,12 @@ const updateProjectConstruction = async (req, res) => {
           status: material.status || 'allocated'
         });
 
+        materialExpense.subcategories.push({
+          name: inventoryItem.itemName,
+          amount: material.quantityRequired * inventoryItem.unitPrice,
+          description: `${material.quantityRequired} units at ${inventoryItem.unitPrice} per unit`
+        });
+
         // Record transaction if quantity changed
         if (quantityDiff !== 0) {
           project.materialTransactions.push({
@@ -137,10 +183,30 @@ const updateProjectConstruction = async (req, res) => {
         }
       }
       projectData.materials = processedMaterials;
+      expenseEntries.push(materialExpense);
     }
 
-    // Process existing data
-    projectData = await processExistingData(projectData);
+    // Process resources
+    if (projectData.resources) {
+      const resourceExpense = {
+        projectId,
+        category: 'Resource Costs',
+        description: 'Updated resource allocations',
+        date: new Date(),
+        paidBy: adminId,
+        subcategories: projectData.resources.map(resource => ({
+          name: resource.resourceName,
+          amount: resource.quantity * resource.unitCost,
+          description: `${resource.quantity} ${resource.resourceType} at ${resource.unitCost} per unit`
+        }))
+      };
+      expenseEntries.push(resourceExpense);
+    }
+
+    // Save all new expense entries
+    if (expenseEntries.length > 0) {
+      await ProjectExpense.insertMany(expenseEntries);
+    }
 
     // Update project fields
     Object.keys(projectData).forEach(key => {
@@ -180,6 +246,7 @@ const updateProjectConstruction = async (req, res) => {
   }
 };
 
+// Keep existing updateWallet function
 const updateWallet = async (adminId, oldProjectData, newProjectData) => {
   try {
     let wallet = await Wallet.findOne({ AdminID: adminId });
@@ -221,5 +288,4 @@ const updateWallet = async (adminId, oldProjectData, newProjectData) => {
     console.error('Error updating wallet:', error);
   }
 };
-
 module.exports = { updateProjectConstruction };

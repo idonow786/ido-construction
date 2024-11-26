@@ -1,4 +1,5 @@
 const ProjectC = require('../../Model/projectConstruction');
+const ProjectExpense = require('../../Model/ProjectExoense');
 const Wallet = require('../../Model/Wallet');
 const Vendor = require('../../Model/vendorSchema');
 const Supplier = require('../../Model/supplierSchema');
@@ -122,105 +123,126 @@ const sendProjectAssignmentEmail = async (receiverEmail, projectName, role, enti
 
 const addProjectConstruction = async (req, res) => {
   try {
-    const projectData = req.body;
+    let projectData = req.body;
     console.log('Project Data: ', projectData);
+
     if (!projectData.projectName) {
       return res.status(400).json({ message: 'Project name is required' });
     }
-  // Process vendors and suppliers
-  if (projectData.vendorsAndSuppliers) {
-    const processedEntities = [];
-    for (const entity of projectData.vendorsAndSuppliers) {
-      const EntityModel = entity.entityType === 'Vendor' ? Vendor : Supplier;
-      const entityDoc = await EntityModel.findOne({ 
-        _id: entity.entity,
-        adminId: req.adminId 
-      });
 
-      if (!entityDoc) {
-        return res.status(404).json({ 
-          message: `${entity.entityType} not found or unauthorized` 
-        });
-      }
+    // Create project first to get projectId
+    const newProject = new ProjectC(projectData);
+    newProject.adminId = req.adminId;
+    await newProject.save();
 
-      processedEntities.push({
-        entity: entityDoc._id,
-        entityType: entity.entityType,
-        role: entity.role,
-        paymentAmount: entity.paymentAmount,
-        paymentStatus: 'pending',
-        assignedDate: new Date()
-      });
+    // Array to hold all expense entries
+    const expenseEntries = [];
 
-      // Send notification email
-      try {
-        const allocatedMaterials = projectData.materials
-          .filter(m => m.allocatedTo?.vendor?.equals(entityDoc._id))
-          .map(m => ({
-            name: m.inventoryItem.itemName,
-            quantity: m.quantityRequired
-          }));
-
-        await sendProjectAssignmentEmail(
-          entityDoc.contactInformation.email,
-          projectData.projectName,
-          entity.role,
-          entity.entityType,
-          allocatedMaterials
-        );
-      } catch (emailError) {
-        console.error('Error sending notification:', emailError);
-      }
+    // Create expense entries for vendors and suppliers
+    if (projectData.vendorsAndSuppliers) {
+      const vendorExpense = {
+        projectId: newProject._id,
+        category: 'Vendor/Supplier Payments',
+        description: 'Initial vendor and supplier allocations',
+        date: new Date(),
+        paidBy: req.adminId,
+        subcategories: projectData.vendorsAndSuppliers.map(entity => ({
+          name: `${entity.entityType} - ${entity.role}`,
+          amount: entity.paymentAmount,
+          description: `Payment allocated to ${entity.entityType}`
+        }))
+      };
+      expenseEntries.push(vendorExpense);
     }
-    projectData.vendorsAndSuppliers = processedEntities;
-  }
 
-  // Process materials and update inventory
-  if (projectData.materials) {
-    const processedMaterials = [];
-    for (const material of projectData.materials) {
-      const inventoryItem = await Inventory.findOne({
-        _id: material.inventoryItem,
-        adminId: req.adminId
-      });
-
-      if (!inventoryItem) {
-        return res.status(404).json({ 
-          message: `Inventory item not found: ${material.inventoryItemId}` 
-        });
-      }
-
-      if (inventoryItem.quantity < material.quantityRequired) {
-        return res.status(400).json({ 
-          message: `Insufficient quantity for ${inventoryItem.itemName}` 
-        });
-      }
-
-      // Deduct from inventory
-      inventoryItem.quantity -= material.quantityRequired;
-      await inventoryItem.save();
-
-      processedMaterials.push({
-        inventoryItem: inventoryItem._id,
-        quantityRequired: material.quantityRequired,
-        allocatedTo: material.allocatedTo,
-        status: 'allocated'
-      });
-
-      // Record the transaction
-      projectData.materialTransactions = projectData.materialTransactions || [];
-      projectData.materialTransactions.push({
-        material: inventoryItem._id,
-        quantity: material.quantityRequired,
-        transactionType: 'deduction',
-        performedBy: req.adminId
-      });
+    // Create expense entries for materials
+    if (projectData.materials) {
+      const materialExpense = {
+        projectId: newProject._id,
+        category: 'Material Costs',
+        description: 'Initial material allocations',
+        date: new Date(),
+        paidBy: req.adminId,
+        subcategories: await Promise.all(projectData.materials.map(async material => {
+          const inventoryItem = await Inventory.findById(material.inventoryItem);
+          return {
+            name: inventoryItem.itemName,
+            amount: material.quantityRequired * inventoryItem.unitPrice,
+            description: `${material.quantityRequired} units at ${inventoryItem.unitPrice} per unit`
+          };
+        }))
+      };
+      expenseEntries.push(materialExpense);
     }
-    projectData.materials = processedMaterials;
-  }
 
-  // Process existing data (reference: addProjectConstruction.js, lines 25-102)
-  // projectData = await processExistingData(projectData);
+    // Create expense entries for resources
+    if (projectData.resources) {
+      const resourceExpense = {
+        projectId: newProject._id,
+        category: 'Resource Costs',
+        description: 'Initial resource allocations',
+        date: new Date(),
+        paidBy: req.adminId,
+        subcategories: projectData.resources.map(resource => ({
+          name: resource.resourceName,
+          amount: resource.quantity * resource.unitCost,
+          description: `${resource.quantity} ${resource.resourceType} at ${resource.unitCost} per unit`
+        }))
+      };
+      expenseEntries.push(resourceExpense);
+    }
+
+    // Save all expense entries
+    if (expenseEntries.length > 0) {
+      await ProjectExpense.insertMany(expenseEntries);
+    }
+
+    // Process materials and update inventory
+    if (projectData.materials) {
+      const processedMaterials = [];
+      for (const material of projectData.materials) {
+        const inventoryItem = await Inventory.findOne({
+          _id: material.inventoryItem,
+          adminId: req.adminId
+        });
+
+        if (!inventoryItem) {
+          return res.status(404).json({ 
+            message: `Inventory item not found: ${material.inventoryItemId}` 
+          });
+        }
+
+        if (inventoryItem.quantity < material.quantityRequired) {
+          return res.status(400).json({ 
+            message: `Insufficient quantity for ${inventoryItem.itemName}` 
+          });
+        }
+
+        // Deduct from inventory
+        inventoryItem.quantity -= material.quantityRequired;
+        await inventoryItem.save();
+
+        processedMaterials.push({
+          inventoryItem: inventoryItem._id,
+          quantityRequired: material.quantityRequired,
+          allocatedTo: material.allocatedTo,
+          status: 'allocated'
+        });
+
+        // Record the transaction
+        projectData.materialTransactions = projectData.materialTransactions || [];
+        projectData.materialTransactions.push({
+          material: inventoryItem._id,
+          quantity: material.quantityRequired,
+          transactionType: 'deduction',
+          performedBy: req.adminId
+        });
+      }
+      projectData.materials = processedMaterials;
+    }
+
+    // Process existing data (reference: addProjectConstruction.js, lines 25-102)
+    // projectData = await processExistingData(projectData);
 
     // Function to safely parse JSON or split string
     const safeParseOrSplit = (value) => {
@@ -309,8 +331,6 @@ const addProjectConstruction = async (req, res) => {
       projectData.communication.stakeholders = safeParseOrSplit(projectData.communication.stakeholders);
     }
 
-    const newProject = new ProjectC(projectData);
-    
     // Handle file uploads (if any)
     if (req.files) {
       newProject.documentation = {};
@@ -326,16 +346,11 @@ const addProjectConstruction = async (req, res) => {
       }
     }
 
-    // Set adminId
-    newProject.adminId = req.adminId;
-
-    await newProject.save();
-
     // Update wallet
     await updateWallet(req.adminId, projectData);
 
     res.status(201).json({
-      message: 'Project created successfully',
+      message: 'Project created successfully with expense entries',
       project: newProject
     });
     console.log(newProject);
