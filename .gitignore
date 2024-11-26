@@ -1,0 +1,77 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+/build
+/dist
+/.next/
+/out/
+
+# Cache directories
+.cache/
+.npm/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+
+# Testing
+/coverage
+
+# Production
+/build
+
+# Temporary files
+*.log
+*.tmp
+.tmp/
+*.pid
+*.seed
+*.pid.lock
+
+# Local development
+.local/
+.history/
+
+# Firebase
+firebase-debug.log
+firebase-debug.*.log
+.firebase/
+serviceAccountKey.json
+
+# Misc
+.DS_Store
+Thumbs.db
+*.pem
+*.cert
+*.key
+*.crt
+
+# Secrets and API keys
+**/secrets.*
+**/apikeys.*
+**/*.key
+**/*.pem
+**/*.crt
+**/*.p12
+**/*.pfx
